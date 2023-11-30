@@ -1,20 +1,27 @@
 <#
--------------------------------------------------------------------------------------------------------------------------
-.Synopsis
-   Create a mail with info about all patches released this month
-.DESCRIPTION
-   Script to be run as schedule task on siteserver. 
-
-   The script generate a html-page and if you use the send-mailkitmessage it will send a mail
-   to a group of administrators with info about the Maintenace Windows for a devices in a 
-   collection.
-.EXAMPLE
-   Send-UpdateDeployedMail.ps1
-
-.DISCLAIMER
-All scripts and other Powershell references are offered AS IS with no warranty.
-These script and functions are tested in my environment and it is recommended that you test these scripts in a test environment before using in your production environment.
--------------------------------------------------------------------------------------------------------------------------
+	.Synopsis
+		Check DP if online
+	
+	.DESCRIPTION
+		The script do two checks
+		
+		1. If DP is offline then the script put the DP in Maintanence Mode and change the DP group for the server.
+		
+		2. If DP is online but in Maintanence Mode it removes the Maintan
+		ence Mode and change the DP group for the server.
+		
+		The scripts also sends a mail with info which servers it moved to Maintance Mode and which servers it restored to online.
+	
+	.EXAMPLE
+		Send-MEMCM_CheckDPStatus.ps1
+		
+		.DISCLAIMER
+		All scripts and other Powershell references are offered AS IS with no warranty.
+		These script and functions are tested in my environment and it is recommended that you test these scripts in a test environment before using in your production environment.
+		-------------------------------------------------------------------------------------------------------------------------
+	
+	.NOTES
+		Additional information about the file.
 #>
 
 <#
@@ -28,7 +35,7 @@ $scriptname = $MyInvocation.MyCommand.Name
 
 # Siteserver
 $siteserver = '<siteserver>'
-# MECM DP-Grupper
+# MECM DP-groups
 $DPMaintGroup = '<DP-groupnameMaintenance>'
 $DPProdGroup = '<DP-groupnamePROD>'
 
@@ -54,10 +61,10 @@ $Logfile = "G:\Scripts\Logfiles\DPLogfile_$filedate.log"
 
 function Write-Log
 {
-Param ([string]$LogString)
-$Stamp = (Get-Date).toString("yyyy/MM/dd HH:mm:ss")
-$LogMessage = "$Stamp $LogString"
-Add-content $LogFile -value $LogMessage
+	Param ([string]$LogString)
+	$Stamp = (Get-Date).toString("yyyy/MM/dd HH:mm:ss")
+	$LogMessage = "$Stamp $LogString"
+	Add-content $LogFile -value $LogMessage
 }
 
 function Get-CMSiteCode
@@ -82,9 +89,10 @@ function Get-CMSiteCode
 #>
 
 
-if (-not(Get-Module -name ConfigurationManager)) {
-    Import-Module ($Env:SMS_ADMIN_UI_PATH.Substring(0,$Env:SMS_ADMIN_UI_PATH.Length-5) + '\ConfigurationManager.psd1')
-    write-host -ForegroundColor Green 'Configmgr module imported'
+if (-not (Get-Module -name ConfigurationManager))
+{
+	Import-Module ($Env:SMS_ADMIN_UI_PATH.Substring(0, $Env:SMS_ADMIN_UI_PATH.Length - 5) + '\ConfigurationManager.psd1')
+	write-host -ForegroundColor Green 'Configmgr module imported'
 }
 
 if (-not (Get-Module -name send-mailkitmessage))
@@ -134,29 +142,32 @@ $FailedDps = @()
 # Gather all updates in updategrpup
 #########################################################
 
-# Loopa igenom samtliga DPs och fyll arrays
-ForEach ($DP in $DPs) {
-
-   $DP = ($DP.NetworkOSPath -replace "\\","").ToUpper()
-
- 
-    
-   If(Test-Connection -ComputerName $DP -Count 4 -Quiet) {
-        Write-Host "$DP är online" -ForegroundColor Green
-        $SucceededDPs += $DP
-   } 
-   Else {
-        Write-Host "$DP är inte online" -ForegroundColor Red
-
-        Write-Log -LogString "$DP not online"
-        $FailedDPs += $DP
-                                
-
-   }
-     
+# Loop thru all selected DP´s and create an array
+ForEach ($DP in $DPs)
+{
+	
+	$DP = ($DP.NetworkOSPath -replace "\\", "").ToUpper()
+	
+	
+	
+	If (Test-Connection -ComputerName $DP -Count 4 -Quiet)
+	{
+		Write-Host "$DP är online" -ForegroundColor Green
+		$SucceededDPs += $DP
+	}
+	Else
+	{
+		Write-Host "$DP är inte online" -ForegroundColor Red
+		
+		Write-Log -LogString "$DP not online"
+		$FailedDPs += $DP
+		
+		
+	}
+	
 }
 
-# Skapa totaler
+# Variable with count 
 $SucceededDPscount = $SucceededDPs.count
 $FailedDpscount = $FailedDps.count
 $TotalDPscount = $SucceededDPscount + $FailedDpscount
@@ -168,109 +179,101 @@ $TotalDPscount = $SucceededDPscount + $FailedDpscount
 Push-Location
 Set-Location $setSiteCode
 
-# Om $FaildedDPs innehåller något, loopa igenom alla
-If ($FailedDps) {
-    
-    $i = 0
-    foreach ($FailedDP in $FailedDPs) {
-
-          $data = Get-CMDistributionPointInfo | Where-Object name -EQ $FailedDP 
-
-        $DPStatus = Get-CMDistributionPointInfo -SiteSystemServerName $FailedDP | Select-Object MaintenanceMode
-        If($DPStatus.MaintenanceMode = '0'){
-        
-            $i++
-            Write-Host "Processing... Nummer $i av" $FailedDPs.Count -ForegroundColor Yellow
-            Write-Log -LogString "Processing... Nummer $i of $FailedDPs.Count"
-
-            Try {
-                Write-Log -LogString "$FailedDP not responding changed to Maintenance Mode and moved to DP-group: $DPMaintGroup"
-                Write-Host "$FailedDP svarar inte, Sätt i Maintenance Mode och byt DP-Grupp till $DPMaintGroup" -ForegroundColor Red
-                Set-CMDistributionPoint -SiteSystemServerName $FailedDP -EnableMaintenanceMode $true -Force
-                Add-CMDistributionPointToGroup -DistributionPointName $FailedDP -DistributionPointGroupName $DPMaintGroup
-                Remove-CMDistributionPointFromGroup -DistributionPointName $FailedDP -DistributionPointGroupName $DPProdGroup -Force
-                Write-Log -LogString "Distributionspoint $FailedDP is now in Maintenance Mode"
-                
-                Write-Host "Distributionspunkt $FailedDP är nu satt i Maintenance Mode" -ForegroundColor DarkCyan
-                Write-Host "----------------------------" -ForegroundColor Yellow
-
-                $object = New-Object -TypeName PSObject
-                $object | Add-Member -MemberType NoteProperty -Name Name -Value $data.name
-                $object | Add-Member -MemberType NoteProperty -Name Desciption -Value $data.description
-                $object | Add-Member -MemberType NoteProperty -Name Status -Value 'Offline'
-                $result += $object
-
-                
-            }
-            Catch {
-                Write-Host "ERROR: Process misslyckades för $FailedDP. Felmeddelande: $_.Exception.Message" -ForegroundColor Red
-                 Write-Log -LogString "ERROR: Process failed for $FailedDP. Errormessage: $_.Exception.Message"
-
-                $object = New-Object -TypeName PSObject
-                $object | Add-Member -MemberType NoteProperty -Name Name -Value $data.name
-                $object | Add-Member -MemberType NoteProperty -Name Desciption -Value $data.description
-                $object | Add-Member -MemberType NoteProperty -Name Status -Value 'Failed to set MW and Move to group'
-                $result += $object
-                
-            }
-        }
-
-    }
-
+# Loop thru $FaildedDPs
+If ($FailedDps)
+{
+	$i = 0
+	foreach ($FailedDP in $FailedDPs)
+	{
+		$data = Get-CMDistributionPointInfo | Where-Object name -EQ $FailedDP
+		$DPStatus = Get-CMDistributionPointInfo -SiteSystemServerName $FailedDP | Select-Object MaintenanceMode
+		If ($DPStatus.MaintenanceMode = '0')
+		{
+			$i++
+			Write-Host "Processing... Nummer $i av" $FailedDPs.Count -ForegroundColor Yellow
+			Write-Log -LogString "Processing... Nummer $i of $FailedDPs.Count"
+			Try
+			{
+				Write-Log -LogString "$FailedDP not responding changed to Maintenance Mode and moved to DP-group: $DPMaintGroup"
+				Write-Host "$FailedDP svarar inte, Sätt i Maintenance Mode och byt DP-Grupp till $DPMaintGroup" -ForegroundColor Red
+				Set-CMDistributionPoint -SiteSystemServerName $FailedDP -EnableMaintenanceMode $true -Force
+				Add-CMDistributionPointToGroup -DistributionPointName $FailedDP -DistributionPointGroupName $DPMaintGroup
+				Remove-CMDistributionPointFromGroup -DistributionPointName $FailedDP -DistributionPointGroupName $DPProdGroup -Force
+				Write-Log -LogString "Distributionspoint $FailedDP is now in Maintenance Mode"
+				
+				Write-Host "Distributionspunkt $FailedDP är nu satt i Maintenance Mode" -ForegroundColor DarkCyan
+				Write-Host "----------------------------" -ForegroundColor Yellow
+				
+				$object = New-Object -TypeName PSObject
+				$object | Add-Member -MemberType NoteProperty -Name Name -Value $data.name
+				$object | Add-Member -MemberType NoteProperty -Name Desciption -Value $data.description
+				$object | Add-Member -MemberType NoteProperty -Name Status -Value 'Offline'
+				$result += $object
+				
+				
+			}
+			Catch
+			{
+				Write-Host "ERROR: Process misslyckades för $FailedDP. Felmeddelande: $_.Exception.Message" -ForegroundColor Red
+				Write-Log -LogString "ERROR: Process failed for $FailedDP. Errormessage: $_.Exception.Message"
+				
+				$object = New-Object -TypeName PSObject
+				$object | Add-Member -MemberType NoteProperty -Name Name -Value $data.name
+				$object | Add-Member -MemberType NoteProperty -Name Desciption -Value $data.description
+				$object | Add-Member -MemberType NoteProperty -Name Status -Value 'Failed to set MW and Move to group'
+				$result += $object
+			}
+		}
+	}
 }
 
-# Om $SucceededDPs innehåller något, loopa igenom alla
-If ($SucceededDPs) {
-    
-    $i = 0
-    foreach ($SucceededDP in $SucceededDPs) {
-        
-        $i++
-        $DP = Get-CMDistributionPointInfo -SiteSystemServerName $SucceededDP
-
-        $data = Get-CMDistributionPointInfo | Where-Object name -EQ $SucceededDP 
-
-        Write-Host "Processing... Nummer $i av " $SucceededDPs.Count -ForegroundColor Yellow
- 
-        If($DP.MaintenanceMode) {
-            Write-Host "$SucceededDP är satt i Maintenance Mode men online, plocka ur den och ändra DP-Grupp till $DPProdGroup..." -ForegroundColor DarkCyan
-            Write-Log -LogString "$SucceededDP are in Maintenance Mode but is online, Remove from Maintenance and change dp-group to: $DPProdGroup..."
-            Try {
-            
-                Set-CMDistributionPoint -SiteSystemServerName $SucceededDP -EnableMaintenanceMode $false -Force
-                Add-CMDistributionPointToGroup -DistributionPointName $SucceededDP -DistributionPointGroupName $DPProdGroup
-                Remove-CMDistributionPointFromGroup -DistributionPointName $SucceededDP -DistributionPointGroupName $DPMaintGroup -Force
-                Write-Host "Distributionspunkt $SucceededDP är nu borttagen ur Maintenance Mode" -ForegroundColor Green
-                Write-Log -LogString "$SucceededDP are in Maintenance Mode but is online, Remove from Maintenance and change dp-group to: $DPProdGroup"
-
-                $object = New-Object -TypeName PSObject
-                $object | Add-Member -MemberType NoteProperty -Name Name -Value $data.name
-                $object | Add-Member -MemberType NoteProperty -Name Desciption -Value $data.description
-                $object | Add-Member -MemberType NoteProperty -Name Status -Value 'Restored'
-                $result += $object
-
-            }
-            Catch {
-                Write-Host "ERROR: Process misslyckades för $SucceededDP. Felmeddelande: $_.Exception.Message" -ForegroundColor Red             
-                Write-Log -LogString "ERROR: Process failed for $SucceededDP. Errormessage: $_.Exception.Message"
-
-                $object = New-Object -TypeName PSObject
-                $object | Add-Member -MemberType NoteProperty -Name Name -Value $data.name
-                $object | Add-Member -MemberType NoteProperty -Name Desciption -Value $data.description
-                $object | Add-Member -MemberType NoteProperty -Name Status -Value 'Failed to Restore and Move to group'
-                $result += $object
-
-            }
-            
-        }
-        Else {
-
-            Write-Host "Distributionspunkt $SucceededDP är ej i Maintenance Mode, gör ingenting." -ForegroundColor DarkCyan
-            Write-Log -LogString "Distributionspoint $SucceededDP are not in Maintenance Mode and are online - Skipped"
-        }
-       
-    }
-
+# Loop thru $SucceededDPs 
+If ($SucceededDPs)
+{
+	
+	$i = 0
+	foreach ($SucceededDP in $SucceededDPs)
+	{
+		$i++
+		$DP = Get-CMDistributionPointInfo -SiteSystemServerName $SucceededDP
+		$data = Get-CMDistributionPointInfo | Where-Object name -EQ $SucceededDP
+		Write-Host "Processing... Nummer $i av " $SucceededDPs.Count -ForegroundColor Yellow
+		If ($DP.MaintenanceMode)
+		{
+			Write-Host "$SucceededDP är satt i Maintenance Mode men online, plocka ur den och ändra DP-Grupp till $DPProdGroup..." -ForegroundColor DarkCyan
+			Write-Log -LogString "$SucceededDP are in Maintenance Mode but is online, Remove from Maintenance and change dp-group to: $DPProdGroup..."
+			Try
+			{
+				Set-CMDistributionPoint -SiteSystemServerName $SucceededDP -EnableMaintenanceMode $false -Force
+				Add-CMDistributionPointToGroup -DistributionPointName $SucceededDP -DistributionPointGroupName $DPProdGroup
+				Remove-CMDistributionPointFromGroup -DistributionPointName $SucceededDP -DistributionPointGroupName $DPMaintGroup -Force
+				Write-Host "Distributionspunkt $SucceededDP är nu borttagen ur Maintenance Mode" -ForegroundColor Green
+				Write-Log -LogString "$SucceededDP are in Maintenance Mode but is online, Remove from Maintenance and change dp-group to: $DPProdGroup"
+				
+				$object = New-Object -TypeName PSObject
+				$object | Add-Member -MemberType NoteProperty -Name Name -Value $data.name
+				$object | Add-Member -MemberType NoteProperty -Name Desciption -Value $data.description
+				$object | Add-Member -MemberType NoteProperty -Name Status -Value 'Restored'
+				$result += $object
+			}
+			Catch
+			{
+				Write-Host "ERROR: Process misslyckades för $SucceededDP. Felmeddelande: $_.Exception.Message" -ForegroundColor Red
+				Write-Log -LogString "ERROR: Process failed for $SucceededDP. Errormessage: $_.Exception.Message"
+				
+				$object = New-Object -TypeName PSObject
+				$object | Add-Member -MemberType NoteProperty -Name Name -Value $data.name
+				$object | Add-Member -MemberType NoteProperty -Name Desciption -Value $data.description
+				$object | Add-Member -MemberType NoteProperty -Name Status -Value 'Failed to Restore and Move to group'
+				$result += $object
+			}
+		}
+		Else
+		{
+			Write-Host "Distributionspunkt $SucceededDP är ej i Maintenance Mode, gör ingenting." -ForegroundColor DarkCyan
+			Write-Log -LogString "Distributionspoint $SucceededDP are not in Maintenance Mode and are online - Skipped"
+		}
+	}
 }
 
 
@@ -331,8 +334,6 @@ $header = @"
 </style>
 "@
 
-
-
 #########################################################    
 # Text added to mail before list of patches
 #########################################################
@@ -350,7 +351,6 @@ SRC="data:image/jpg;base64,/9j/4AAQSkZJRgABAQEAWgBaAAD/4gKwSUNDX1BST0ZJTEUAAQEAA
 <p>Antal Distributionspunkter: $TotalDPscount</p>
 <p>Antal Distributionspunkter som svarar på ping: $SucceededDPscount</p>
 <p>Antal Distributionspunkter som inte svarar på ping: $FailedDpscount</b></p>
-
 "@
 
 #########################################################
@@ -363,8 +363,7 @@ $post = @"
 ##########################################################################################
 # Mail with pre and post converted to Variable later used to send with send-mailkitmessage
 ##########################################################################################
-$DPstatus = $result | Sort-Object dateposted -Descending | where-object { $_.dateposted -ge $limit }| ConvertTo-Html -Title "Distributionpoints" -PreContent $pre -PostContent $post -Head $header
-
+$DPstatus = $result | Sort-Object dateposted -Descending | where-object { $_.dateposted -ge $limit } | ConvertTo-Html -Title "Distributionpoints" -PreContent $pre -PostContent $post -Head $header
 
 #########################################################
 # Mailsettings
@@ -372,22 +371,22 @@ $DPstatus = $result | Sort-Object dateposted -Descending | where-object { $_.dat
 #########################################################
 
 #use secure connection if available ([bool], optional)
-$UseSecureConnectionIfAvailable=$false
+$UseSecureConnectionIfAvailable = $false
 
 #authentication ([System.Management.Automation.PSCredential], optional)
-$Credential=[System.Management.Automation.PSCredential]::new("Username", (ConvertTo-SecureString -String "Password" -AsPlainText -Force))
+$Credential = [System.Management.Automation.PSCredential]::new("Username", (ConvertTo-SecureString -String "Password" -AsPlainText -Force))
 
 #SMTP server ([string], required)
-$SMTPServer=$MailSMTP
+$SMTPServer = $MailSMTP
 
 #port ([int], required)
-$Port=$MailPortnumber
+$Port = $MailPortnumber
 
 #sender ([MimeKit.MailboxAddress] http://www.mimekit.net/docs/html/T_MimeKit_MailboxAddress.htm, required)
-$From=[MimeKit.MailboxAddress]$MailFrom
+$From = [MimeKit.MailboxAddress]$MailFrom
 
 #recipient list ([MimeKit.InternetAddressList] http://www.mimekit.net/docs/html/T_MimeKit_InternetAddressList.htm, required)
-$RecipientList=[MimeKit.InternetAddressList]::new()
+$RecipientList = [MimeKit.InternetAddressList]::new()
 $RecipientList.Add([MimeKit.InternetAddress]$MailTo1)
 $RecipientList.Add([MimeKit.InternetAddress]$MailTo2)
 $RecipientList.Add([MimeKit.InternetAddress]$MailTo3)
@@ -402,37 +401,37 @@ $RecipientList.Add([MimeKit.InternetAddress]$MailTo4)
 
 
 #bcc list ([MimeKit.InternetAddressList] http://www.mimekit.net/docs/html/T_MimeKit_InternetAddressList.htm, optional)
-$BCCList=[MimeKit.InternetAddressList]::new()
+$BCCList = [MimeKit.InternetAddressList]::new()
 $BCCList.Add([MimeKit.InternetAddress]"BCCRecipient1EmailAddress")
 
 
 #subject ([string], required)
-$Subject=[string]"Kontroll av Distributionspunkter - $today "
+$Subject = [string]"Kontroll av Distributionspunkter - $today "
 
 #text body ([string], optional)
 #$TextBody=[string]"TextBody"
 
 #HTML body ([string], optional)
-$HTMLBody=[string]$DPstatus
+$HTMLBody = [string]$DPstatus
 
 #attachment list ([System.Collections.Generic.List[string]], optional)
-$AttachmentList=[System.Collections.Generic.List[string]]::new()
+$AttachmentList = [System.Collections.Generic.List[string]]::new()
 #$AttachmentList.Add("$HTMLFileSavePath")
 
 # Mailparameters
-$Parameters=@{
-    "UseSecureConnectionIfAvailable"=$UseSecureConnectionIfAvailable    
-    #"Credential"=$Credential
-    "SMTPServer"=$SMTPServer
-    "Port"=$Port
-    "From"=$From
-    "RecipientList"=$RecipientList
-    #"CCList"=$CCList
-    #"BCCList"=$BCCList
-    "Subject"=$Subject
-    #"TextBody"=$TextBody
-    "HTMLBody"=$HTMLBody
-    "AttachmentList"=$AttachmentList
+$Parameters = @{
+	"UseSecureConnectionIfAvailable" = $UseSecureConnectionIfAvailable
+	#"Credential"=$Credential
+	"SMTPServer"					 = $SMTPServer
+	"Port"						     = $Port
+	"From"						     = $From
+	"RecipientList"				     = $RecipientList
+	#"CCList"=$CCList
+	#"BCCList"=$BCCList
+	"Subject"					     = $Subject
+	#"TextBody"=$TextBody
+	"HTMLBody"					     = $HTMLBody
+	"AttachmentList"				 = $AttachmentList
 }
 #########################################################
 #send email
@@ -446,5 +445,5 @@ Write-Log -LogString "$scriptname - Script end!"
 
 
 
-  
-    
+
+
